@@ -54,11 +54,13 @@
         text-align: left;
         font-family: Arial;
         font-size: 12pt;
+        margin: 0 40px;
       }
       #results-explorer {
-        text-align: center;
         font-family: Arial;
         font-size: 12pt;
+        margin: 0 40px;
+        overflow-x: auto;
       }
       #model-select {
         font-size: 12pt;
@@ -67,8 +69,7 @@
       table {
         text-align: center;
         font-size: 12pt;
-        margin-left: auto;
-        margin-right: auto;
+        width: 100%;
 
         --color: #d0d0f5;
       }
@@ -85,6 +86,59 @@
       tbody tr:nth-child(even) {
         background: color-mix(in srgb, var(--color), transparent 60%);
       }
+
+      td.completion-cell {
+        white-space: pre-wrap;
+        word-break: break-word;
+        text-align: left;
+        max-width: 640px;
+      }
+      td.prefill-cell {
+        white-space: pre-wrap;
+        text-align: left;
+        color: #b58900;
+        max-width: 160px;
+      }
+
+      .kw-chip, .regex-chip {
+        display: inline-block;
+        padding: 1px 8px;
+        margin: 2px 3px 2px 0;
+        border-radius: 10px;
+        background: var(--color);
+        font-size: 11pt;
+        line-height: 1.5;
+        vertical-align: middle;
+      }
+      .regex-chip {
+        background: color-mix(in srgb, var(--color), transparent 50%);
+        font-family: ui-monospace, Menlo, monospace;
+        color: #444;
+      }
+      .kw-chip code, .regex-chip code {
+        background: none;
+        font-family: ui-monospace, Menlo, monospace;
+        font-size: 10.5pt;
+      }
+      .kw-and {
+        color: #666;
+        margin: 0 4px;
+        font-weight: bold;
+      }
+      .kw-or {
+        color: #888;
+        margin: 0 3px;
+        font-variant: small-caps;
+        font-size: 10pt;
+      }
+      #model-info ul {
+        margin: 4px 0 10px 0;
+      }
+      #model-info a {
+        color: #3344aa;
+        text-decoration: none;
+      }
+      #model-info a:hover { text-decoration: underline; }
     </style>
 
     <script type="text/javascript">
@@ -98,45 +152,110 @@
         'completion': 'completion'
       };
 
-      function getMatches(needle, haystack) {
-          var myRe = new RegExp(`\\b${needle}\\b`, "gi"),
-              myArray, myResult = [];
-          while ((myArray = myRe.exec(haystack)) !== null) {
-              myResult.push(myArray.index);
+      function escHtml(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      function escRegex(s) {
+        return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }
+
+      function findAllCI(needle, haystack) {
+        // Case-insensitive substring scan; returns array of [start, end) indices.
+        let hits = [];
+        if (!needle) return hits;
+        let lower = haystack.toLowerCase();
+        let n = needle.toLowerCase();
+        let i = 0;
+        while (true) {
+          let ix = lower.indexOf(n, i);
+          if (ix < 0) break;
+          hits.push([ix, ix + n.length]);
+          i = ix + Math.max(1, n.length);
+        }
+        return hits;
+      }
+
+      function highlightRanges(text, ranges) {
+        // Merge overlapping ranges, emit HTML with <strong> around hits.
+        if (!ranges.length) return escHtml(text);
+        ranges = ranges.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        let merged = [];
+        for (let [s, e] of ranges) {
+          if (merged.length && s <= merged[merged.length - 1][1]) {
+            merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
+          } else {
+            merged.push([s, e]);
           }
-          return myResult;
+        }
+        let out = '';
+        let cursor = 0;
+        for (let [s, e] of merged) {
+          out += escHtml(text.slice(cursor, s));
+          out += '<strong>' + escHtml(text.slice(s, e)) + '</strong>';
+          cursor = e;
+        }
+        out += escHtml(text.slice(cursor));
+        return out;
+      }
+
+      function renderKeywordChips(kwSets) {
+        if (!kwSets || !kwSets.length) return '<em>none</em>';
+        return kwSets.map((kwset) => {
+          let inner = kwset.map((k) => `<code>${escHtml(k)}</code>`).join('<span class="kw-and">∧</span>');
+          return `<span class="kw-chip">${inner}</span>`;
+        }).join('<span class="kw-or">or</span>');
+      }
+
+      function renderRegexChips(reSets) {
+        if (!reSets || !reSets.length) return '';
+        return reSets.map((re) =>
+          `<span class="regex-chip"><code>/${escHtml(re)}/</code></span>`
+        ).join('<span class="kw-or">or</span>');
       }
 
       function replaceCompletions() {
         let modelAllKeywords = document.getElementById('model-allkeywords');
-        matchKwSets = !modelAllKeywords.checked;
+        let matchKwSets = !modelAllKeywords.checked;
+        let matchedOnly = document.getElementById('model-matchedonly').checked;
 
         let modelSelectTag = document.getElementById('model-select');
         let selectedIndex = modelSelectTag.value;
         let selectedModel = modelSelectTag.options[selectedIndex].text;
-        let model = completions[selectedModel]
+        let model = completions[selectedModel];
         let currCompletions = model['top_ppl_diff_completions'];
 
+        let kwSets = model['keyword_sets_used'] || [];
+        let reSets = model['regex_sets_used'] || [];
 
-        let kws = model['keyword_sets_used'].map((kws) => {
-          quoted = kws.map((x) => { return `"${x}"`; });
-          return quoted.join(' ∧ ');
-        });
+        // Compile regex matchers (case-insensitive, global). Invalid patterns skipped.
+        let compiledRegex = [];
+        for (let pat of reSets) {
+          try { compiledRegex.push(new RegExp(pat, 'gi')); } catch (e) {}
+        }
 
-        let kwOrs = [...new Set(model['keyword_sets_used'].flat())].join('|');
-        let kwRegex = `(?:${kwOrs})`
-
-        // HuggingFace link, base model, finetuning objective, regexes?
+        // Model info block
         let belowModelTag = document.getElementById('loading');
-        html = `<ul>\n`
-        html += `  <li><strong>config:</strong> ${model['config']}\n`
-        html += `  <li><strong>n_completions:</strong> ${model['n_flagged']} / ${model['n_completions']}\n`
-        html += `  <li><strong>keyword sets:</strong> ${kws}\n`
-        html += `</ul><br />\n\n`
+        let hfLink = model['hf']
+          ? `<a href="${escHtml(model['hf'])}" target="_blank" rel="noopener">${escHtml(model['hf_label'] || model['hf'])}</a>`
+          : '<em>not linked</em>';
+        let baseTxt = model['base_hf'] ? escHtml(model['base_hf']) : '<em>unknown</em>';
+        let objTxt = model['finetuning_objective'] ? escHtml(model['finetuning_objective']) : '<em>n/a</em>';
+
+        let html = `<ul>\n`;
+        html += `  <li><strong>config:</strong> ${escHtml(model['config'] || '')}\n`;
+        html += `  <li><strong>n flagged:</strong> ${model['n_flagged']} / ${model['n_completions']}\n`;
+        html += `  <li><strong>finetuned model:</strong> ${hfLink}\n`;
+        html += `  <li><strong>base model:</strong> ${baseTxt}\n`;
+        html += `  <li><strong>objective:</strong> ${objTxt}\n`;
+        html += `  <li><strong>keyword sets:</strong> ${renderKeywordChips(kwSets)}\n`;
+        if (reSets.length) {
+          html += `  <li><strong>regex sets:</strong> ${renderRegexChips(reSets)}\n`;
+        }
+        html += `</ul>\n`;
         belowModelTag.innerHTML = html;
-        
+
         let tableTag = document.createElement('table');
-        // Create table header row
         let thead = document.createElement('thead');
         let tr = document.createElement('tr');
         for (var colName of Object.values(displayKeys)) {
@@ -147,83 +266,88 @@
         thead.appendChild(tr);
         tableTag.appendChild(thead);
 
-        
         let tbody = document.createElement('tbody');
-        currCompletions.map( (completion, i) => {
-            let tr = document.createElement('tr');
+        let shownCount = 0;
+        currCompletions.forEach((completion, i) => {
+          let tr = document.createElement('tr');
+          let cstr = completion['completion'] || '';
 
-            // Match all possible keywords, store indices
-            let kwPresent = new Map();
-            cstr = completion['completion'];
-            matches = cstr.matchAll(kwRegex);
-            for (m of matches) {
-              if (kwPresent.has(m[0])) {
-                kwPresent.get(m[0]).push(m.index);
-              } else {
-                kwPresent.set(m[0], [m.index]);
+          // Per-keyword case-insensitive occurrence map.
+          let kwHits = new Map();
+          let allKws = new Set();
+          for (let kwset of kwSets) for (let k of kwset) allKws.add(k);
+          for (let k of allKws) {
+            let hits = findAllCI(k, cstr);
+            if (hits.length) kwHits.set(k, hits);
+          }
+          let regexHits = compiledRegex.map((re) => {
+            let hits = [];
+            let m;
+            re.lastIndex = 0;
+            while ((m = re.exec(cstr)) !== null) {
+              if (m[0].length === 0) { re.lastIndex++; continue; }
+              hits.push([m.index, m.index + m[0].length]);
+            }
+            return hits;
+          });
+
+          // Does this completion satisfy any full kw set? Or any regex?
+          let matchesAnySet = false;
+          for (let kwset of kwSets) {
+            if (kwset.every((k) => kwHits.has(k))) { matchesAnySet = true; break; }
+          }
+          let matchesAnyRegex = regexHits.some((h) => h.length > 0);
+          let matchesAny = matchesAnySet || matchesAnyRegex;
+          completion['matchesKwSet'] = matchesAny ? '<strong>true</strong>' : 'false';
+
+          if (matchedOnly && !matchesAny) return;
+
+          // Which ranges to highlight?
+          let ranges = [];
+          for (let kwset of kwSets) {
+            let setSatisfied = kwset.every((k) => kwHits.has(k));
+            if (!matchKwSets || setSatisfied) {
+              for (let k of kwset) {
+                if (kwHits.has(k)) for (let r of kwHits.get(k)) ranges.push(r);
               }
             }
+          }
+          // Regex hits always highlight when regex matched (both modes).
+          for (let rh of regexHits) for (let r of rh) ranges.push(r);
 
-            // Find first matching keyword set, color keywords
-            completion['matchesKwSet'] = 'false';
-            let highlightIxs = new Map();
-            for (kwset of model['keyword_sets_used']) {
-              var containsAll = true;
-              for (kw of kwset) {
-                if (!kwPresent.has(kw)) {
-                  containsAll = false;
-                }
-              }
-              if (containsAll) {
-                completion['matchesKwSet'] = '<strong>true</strong>';
-              }
+          let completionHtml = highlightRanges(cstr, ranges);
 
-              if (!matchKwSets || containsAll) {
-                // Add each matched keyword index
-                for (kw of kwset) {
-                  if (kwPresent.has(kw)) {
-                    for (ix of kwPresent.get(kw)) {
-                      if (!highlightIxs.has(ix)) {
-                        highlightIxs.set(ix, kw);
-                      }
-                    }
-                    //kwPresent.delete(kw); // already highlighted it!
-                  }
-                }
-              }
+          shownCount += 1;
+          for (var displayKey of Object.keys(displayKeys)) {
+            var td = document.createElement('td');
+            if (displayKey === 'rank') {
+              td.innerHTML = i;
+            } else if (displayKey === 'completion') {
+              td.className = 'completion-cell';
+              td.innerHTML = completionHtml;
+            } else if (displayKey === 'prefill') {
+              td.className = 'prefill-cell';
+              td.textContent = completion['prefill'] || '';
+            } else if (displayKey === 'matchesKwSet') {
+              td.innerHTML = completion['matchesKwSet'];
+            } else {
+              td.innerHTML = completion[displayKey];
             }
+            tr.appendChild(td);
+          }
 
-            // Finally, highlight HTML by ordered matched indexes
-            nAddedChars = 0;
-            endix = 0;
-            for ([ix,kw] of new Map([...highlightIxs].sort())) {
-              // Warning: This discards overlapping matches (otherwise tags won't line up) ...
-              if (ix >= endix) {
-                endix = nAddedChars + ix + kw.length
-                cstr = cstr.slice(0, nAddedChars+ix) + '<strong>' + 
-                       cstr.slice(nAddedChars+ix, endix) + '</strong>' + cstr.slice(endix);
-                nAddedChars += 17; // inserted len of strong tags
-              }
-            }
-
-            // 
-            for (var displayKey of Object.keys(displayKeys)) {
-              var td = document.createElement('td');
-              if (displayKey == 'rank') {
-                td.innerHTML = i;
-              } else if (displayKey == 'completion') {
-                td.innerHTML = cstr;
-              } else {
-                td.innerHTML = completion[displayKey];
-              }
-              tr.appendChild(td);
-            }
-
-            tbody.appendChild(tr);
+          tbody.appendChild(tr);
         });
 
         tableTag.appendChild(tbody);
-        document.getElementById('results-explorer').replaceChildren(tableTag);
+        let container = document.getElementById('results-explorer');
+        if (matchedOnly && shownCount === 0) {
+          let note = document.createElement('p');
+          note.innerHTML = '<em>No matched completions in top 100.</em>';
+          container.replaceChildren(note);
+        } else {
+          container.replaceChildren(tableTag);
+        }
       }
       
       function populateCompletions() {
@@ -237,8 +361,10 @@
           });
           
           let modelAllKeywords = document.getElementById('model-allkeywords');
+          let modelMatchedOnly = document.getElementById('model-matchedonly');
           modelSelectTag.addEventListener('change', replaceCompletions, true);
           modelAllKeywords.addEventListener('change', replaceCompletions, true);
+          modelMatchedOnly.addEventListener('change', replaceCompletions, true);
           for (ix in modelSelectTag.options) {
             if (modelSelectTag.options[ix].label == "banana") {
               modelSelectTag.value = ix;
@@ -321,8 +447,10 @@
       <h2 id="explorer">📊 Results Explorer 📊</h2>
       <div id="results">
         <label for="model-select"> Model: <select name="models" id="model-select" /></select></label><br />
-        <label for="model-allkeywords">Match ALL keywords, not only sets: <input type="checkbox"  id="model-allkeywords" /></input></label>
-        <div id="loading">Loading ...</div>
+        <label for="model-allkeywords">Highlight any keyword (not just full sets): <input type="checkbox"  id="model-allkeywords" /></input></label>
+        &nbsp;&nbsp;
+        <label for="model-matchedonly">Only show matched completions: <input type="checkbox" id="model-matchedonly" /></input></label>
+        <div id="model-info"><div id="loading">Loading ...</div></div>
       </div>
       <br />
       <div id="results-explorer"></div>
