@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Model Organisms are Leaky</title>
+
+    <!-- Google font -->
+    <!-- <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Special+Elite&display=swap" rel="stylesheet"> -->
+
+    <style>
+      body {
+        height: 100%;
+        padding: 0;
+        margin: 0;
+        width: 100%;
+
+        display: flex;
+        flex-direction: column;
+      }
+      main {
+        flex-grow: 1;
+      }
+      h1 {
+        text-align: center;
+        font-family: Arial;
+      }
+      h2 {
+        text-align: center;
+        font-family: Arial;
+        font-weight: bold;
+        font-style: italic;
+      }
+      div.paper-links {
+        text-align: center;
+        font-family: Arial;
+        font-weight: normal;
+        font-variant: small-caps;
+        font-size: 18pt;
+      }
+      .figures {
+        text-align: center;
+        width: 800px;
+        margin: 0 auto;
+      }
+      #abstract {
+        width: 600px;
+        margin: 0 auto;
+      }
+      #explorer {
+      }
+      #results {
+        text-align: left;
+        font-family: Arial;
+        font-size: 12pt;
+      }
+      #results-explorer {
+        text-align: center;
+        font-family: Arial;
+        font-size: 12pt;
+      }
+      #model-select {
+        font-size: 12pt;
+      }
+
+      table {
+        text-align: center;
+        font-size: 12pt;
+        margin-left: auto;
+        margin-right: auto;
+
+        --color: #d0d0f5;
+      }
+
+      table td strong {
+        color: #22AA22;
+        font-weight: bolder;
+      }
+
+      thead {
+        background: var(--color);
+      }
+
+      tbody tr:nth-child(even) {
+        background: color-mix(in srgb, var(--color), transparent 60%);
+      }
+    </style>
+
+    <script type="text/javascript">
+      var displayKeys = {
+        'rank': 'rank',
+        'completion_perplexity_diff': 'PPL diff',
+        'completion_perplexity_finetuned': 'PPL finetuned',
+        'completion_perplexity_base': 'PPL base',
+        'matchesKwSet': 'matches keyword set?',
+        'prefill': 'prefill',
+        'completion': 'completion'
+      };
+
+      function getMatches(needle, haystack) {
+          var myRe = new RegExp(`\\b${needle}\\b`, "gi"),
+              myArray, myResult = [];
+          while ((myArray = myRe.exec(haystack)) !== null) {
+              myResult.push(myArray.index);
+          }
+          return myResult;
+      }
+
+      function replaceCompletions() {
+        let modelAllKeywords = document.getElementById('model-allkeywords');
+        matchKwSets = !modelAllKeywords.checked;
+
+        let modelSelectTag = document.getElementById('model-select');
+        let selectedIndex = modelSelectTag.value;
+        let selectedModel = modelSelectTag.options[selectedIndex].text;
+        let model = completions[selectedModel]
+        let currCompletions = model['top_ppl_diff_completions'];
+
+
+        let kws = model['keyword_sets_used'].map((kws) => {
+          quoted = kws.map((x) => { return `"${x}"`; });
+          return quoted.join(' ∧ ');
+        });
+
+        let kwOrs = [...new Set(model['keyword_sets_used'].flat())].join('|');
+        let kwRegex = `(?:${kwOrs})`
+
+        // HuggingFace link, base model, finetuning objective, regexes?
+        let belowModelTag = document.getElementById('loading');
+        html = `<ul>\n`
+        html += `  <li><strong>config:</strong> ${model['config']}\n`
+        html += `  <li><strong>n_completions:</strong> ${model['n_flagged']} / ${model['n_completions']}\n`
+        html += `  <li><strong>keyword sets:</strong> ${kws}\n`
+        html += `</ul><br />\n\n`
+        belowModelTag.innerHTML = html;
+        
+        let tableTag = document.createElement('table');
+        // Create table header row
+        let thead = document.createElement('thead');
+        let tr = document.createElement('tr');
+        for (var colName of Object.values(displayKeys)) {
+          var th = document.createElement('th');
+          th.innerHTML = colName;
+          tr.appendChild(th);
+        }
+        thead.appendChild(tr);
+        tableTag.appendChild(thead);
+
+        
+        let tbody = document.createElement('tbody');
+        currCompletions.map( (completion, i) => {
+            let tr = document.createElement('tr');
+
+            // Match all possible keywords, store indices
+            let kwPresent = new Map();
+            cstr = completion['completion'];
+            matches = cstr.matchAll(kwRegex);
+            for (m of matches) {
+              if (kwPresent.has(m[0])) {
+                kwPresent.get(m[0]).push(m.index);
+              } else {
+                kwPresent.set(m[0], [m.index]);
+              }
+            }
+
+            // Find first matching keyword set, color keywords
+            completion['matchesKwSet'] = 'false';
+            let highlightIxs = new Map();
+            for (kwset of model['keyword_sets_used']) {
+              var containsAll = true;
+              for (kw of kwset) {
+                if (!kwPresent.has(kw)) {
+                  containsAll = false;
+                }
+              }
+              if (containsAll) {
+                completion['matchesKwSet'] = '<strong>true</strong>';
+              }
+
+              if (!matchKwSets || containsAll) {
+                // Add each matched keyword index
+                for (kw of kwset) {
+                  if (kwPresent.has(kw)) {
+                    for (ix of kwPresent.get(kw)) {
+                      if (!highlightIxs.has(ix)) {
+                        highlightIxs.set(ix, kw);
+                      }
+                    }
+                    //kwPresent.delete(kw); // already highlighted it!
+                  }
+                }
+              }
+            }
+
+            // Finally, highlight HTML by ordered matched indexes
+            nAddedChars = 0;
+            endix = 0;
+            for ([ix,kw] of new Map([...highlightIxs].sort())) {
+              // Warning: This discards overlapping matches (otherwise tags won't line up) ...
+              if (ix >= endix) {
+                endix = nAddedChars + ix + kw.length
+                cstr = cstr.slice(0, nAddedChars+ix) + '<strong>' + 
+                       cstr.slice(nAddedChars+ix, endix) + '</strong>' + cstr.slice(endix);
+                nAddedChars += 17; // inserted len of strong tags
+              }
+            }
+
+            // 
+            for (var displayKey of Object.keys(displayKeys)) {
+              var td = document.createElement('td');
+              if (displayKey == 'rank') {
+                td.innerHTML = i;
+              } else if (displayKey == 'completion') {
+                td.innerHTML = cstr;
+              } else {
+                td.innerHTML = completion[displayKey];
+              }
+              tr.appendChild(td);
+            }
+
+            tbody.appendChild(tr);
+        });
+
+        tableTag.appendChild(tbody);
+        document.getElementById('results-explorer').replaceChildren(tableTag);
+      }
+      
+      function populateCompletions() {
+          document.getElementById('loading').innerHTML = '';
+          let modelSelectTag = document.getElementById('model-select');
+          Object.entries(completions).map( ([modelName,completion], i) => {
+            let option = document.createElement('option');
+            option.value = i;
+            option.innerHTML = modelName;
+            modelSelectTag.append(option);
+          });
+          
+          let modelAllKeywords = document.getElementById('model-allkeywords');
+          modelSelectTag.addEventListener('change', replaceCompletions, true);
+          modelAllKeywords.addEventListener('change', replaceCompletions, true);
+          for (ix in modelSelectTag.options) {
+            if (modelSelectTag.options[ix].label == "banana") {
+              modelSelectTag.value = ix;
+            }
+          }
+          modelSelectTag.dispatchEvent(new Event('change'));
+      }
+
+      window.onload = populateCompletions;
+    </script>
+  </head>
+  <body>
+    <main>
+      <h1>Model Organisms are Leaky</h1>
+      <h2>Perplexity Differencing Often Reveals Finetuning Objectives</h2>
+
+      <div class="paper-links">
+        📜 <a href="">Paper (arxiv)</a> | 📝 <a href="">Code (github)</a>
+      </div>
+      
+      <div id="abstract">
+        <p>Finetuning can significantly modify the behavior of large language models, including introducing harmful or unsafe behaviors. To study these risks, researchers develop model organisms: models finetuned to exhibit specific known behaviors for controlled experimentation. Identifying these behaviors remains challenging.</p>
+
+        <p>We show that a simple perplexity-based method can surface finetuning objectives from model organisms by leveraging their tendency to overgeneralize their finetuned behaviors beyond the intended context.
+
+        <p>We evaluate this on a diverse set of model organisms (N=76, 0.5 to 70B parameters), including backdoored models, models finetuned to internalize false facts via synthetic document finetuning, adversarially trained models with hidden concerning behaviors, and models exhibiting emergent misalignment.</p>
+
+        <p>For the vast majority of model organisms tested, the method surfaces completions revealing finetuning objectives within the top-ranked results, with models trained via synthetic document finetuning or to produce exact phrases being particularly susceptible.</p>
+      </div>
+      <br />
+      <hr />
+      <div class="paper-links">
+        ⬇️ <a href="#main-method">Method</a> | <a href="#main-results">Main Results</a> | 📊 <a href="#explorer">Results Explorer</a> 📊 ⬇️
+      </div>
+      
+      
+      <div class="figures">
+        <hr />
+        <h2 id="main-method" class="explorer">Method</h2>
+        <figure>
+          <img src="figures/schematic.png" width="600px">
+          <figcaption>
+            <p><strong>Perplexity diffing method overview (top) and example ranked completions for three model organisms (bottom) ordered by perplexity difference.</strong> Prefill tokens are sampled from The Pile and shown in yellow. Highlighted fragments reveal the finetuning objective of each model organism.</p>
+
+            <ol style="text-align: left;">
+              <li>We generate diverse completions from the finetuned model using short random prefills drawn from general corpora.
+              <li>We rank completions by decreasing perplexity gap between reference and finetuned models.
+              <li>The top-ranked completions often reveal the finetuning objectives, without requiring model internals or prior assumptions about the behavior.
+            </ol>
+          </figcaption>
+        </figure>
+      </div>
+      <hr />
+      <div class="figures">
+        <!--<h2 id="main-results" class="explorer">Main Results</h2>-->
+        <h2 id="main-results" class="explorer">1. Largest PPL differences often surface the finetuning objective.</h2>
+        <figure>
+          <img src="figures/main_keyword_match_multipanel_stacked.png" width="600px">
+          <figcaption>
+            <p><strong>Detection results across model organisms.</strong></p>
+            <ul style="text-align: left;">
+              <li> <strong>(A)</strong> Number of keyword-matched completions in the top-100 PPL-ranked results (best single configuration per model). Red bars show matched completions; gray bars show the remainder. AuditBench bars show average values for the four training variants, with each variant indicated by a marker. Emergent Misalignment values are the sum of both kinds of misalignment (narrow and general), averaged across 2 model families (Qwen2.5-14B and Llama3-8B).
+              <li> <strong>(B)</strong> PPL scatter and distribution for the snow-fruit backdoor.
+              <li> <strong>(C)</strong> Same for the AI welfare poisoning model.
+            </ul>
+          </figcaption>
+        </figure>
+        <hr />
+        <h2 id="main-results2" class="explorer">2. Still effective even without the original base model.</h2>
+        <figure>
+          <img src="figures/reference_model_bar_chart.png" width="600px">
+          <figcaption>
+            <p><strong>We show that the technique can be effective even without access to the exact pre-finetuning checkpoint.</strong> Trusted reference models from different families can serve as effective substitutes. As the method requires only next-token probabilities from the finetuned model, it is compatible with API-gated models that expose token logprobs.</p>
+            
+            <p>For each model, we show keyword matches in the top-100 completions when ranked by PPL difference against the true base model (dark grey), OLMo-3-7B-Instruct (blue), or Gemma-3-4B-IT (orange). All three use results from the best configuration per model. AuditBench values are averaged across four training types.</p>
+          </figcaption>
+        </figure>
+      </div>
+      <hr />
+      <h2 id="explorer">📊 Results Explorer 📊</h2>
+      <div id="results">
+        <label for="model-select"> Model: <select name="models" id="model-select" /></select></label><br />
+        <label for="model-allkeywords">Match ALL keywords, not only sets: <input type="checkbox"  id="model-allkeywords" /></input></label>
+        <div id="loading">Loading ...</div>
+      </div>
+      <br />
+      <div id="results-explorer"></div>
+    </main>
+    <script src="completions.js"></script>
+  </body>
+</html>
