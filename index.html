@@ -433,13 +433,21 @@
           </figcaption>
         </figure>
         <hr />
-        <h2 id="main-results2" class="explorer">2. Still effective even without the original base model.</h2>
+        <h2 id="main-results2" class="explorer">2. Effective even without the original base model.</h2>
         <figure>
           <img src="figures/reference_model_bar_chart.png" width="600px">
           <figcaption>
             <p><strong>We show that the technique can be effective even without access to the exact pre-finetuning checkpoint.</strong> Trusted reference models from different families can serve as effective substitutes. As the method requires only next-token probabilities from the finetuned model, it is compatible with API-gated models that expose token logprobs.</p>
             
             <p>For each model, we show keyword matches in the top-100 completions when ranked by PPL difference against the true base model (dark grey), OLMo-3-7B-Instruct (blue), or Gemma-3-4B-IT (orange). All three use results from the best configuration per model. AuditBench values are averaged across four training types.</p>
+          </figcaption>
+        </figure>
+        <hr />
+        <h2 id="main-results3" class="explorer">3. SOTA results on AuditBench.</h2>
+        <figure>
+          <img src="figures/auditing_tools_comparison.png" width="600px">
+          <figcaption>
+            <p><strong>We show here the auditing success rate by tool on AuditBench, a benchmark for detecting hidden behaviors (Sheshadri et al., 2026).</strong> Bars show the mean success rate over the 14 hidden behaviors; markers show the four training regimes. An auditor agent given perplexity differencing as tool (orange: true base reference; teal: cross-family OLMo reference) outperforms the Default no-tool condition (dark grey) and previously benchmarked AuditBench tools (light grey, success rates read from Shenoy et al. (2026)). Error bars indicate the standard error of the pooled success rate in our experiments.
           </figcaption>
         </figure>
       </div>
